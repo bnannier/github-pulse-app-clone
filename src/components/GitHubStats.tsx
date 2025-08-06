@@ -154,98 +154,24 @@ const GitHubStats = ({ user, onLogout }: GitHubStatsProps) => {
     setSyncingRepos(prev => new Set(prev).add(repo.id));
     
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const accessToken = session?.provider_token;
-
-      if (!accessToken) {
-        throw new Error('GitHub access token not found. Please logout and login again.');
+      // Trigger update check for all repositories
+      const { error } = await supabase.functions.invoke('check-repository-updates', {
+        body: { source: 'manual' }
+      });
+      
+      if (error) {
+        throw new Error(error.message || 'Failed to check for updates');
       }
-
-      // Check if this is a cloned repository (ends with -clone)
-      if (repo.name.endsWith('-clone')) {
-        // This IS a cloned repo, find its original
-        const originalName = repo.name.replace('-clone', '');
-        const originalFullName = repo.full_name.replace('-clone', '');
-        
-        // Find the clone relationship
-        const { data: clones, error: cloneError } = await supabase
-          .from('repository_clones')
-          .select('id')
-          .eq('cloned_repo_full_name', repo.full_name)
-          .eq('sync_enabled', true);
-
-        if (cloneError || !clones || clones.length === 0) {
-          throw new Error('No clone relationship found for this repository');
-        }
-
-        const { data, error } = await supabase.functions.invoke('sync-repository', {
-          body: {
-            cloneId: clones[0].id,
-            triggerSource: 'manual'
-          }
-        });
-
-        if (error) {
-          throw error;
-        }
-
-        if (data.success) {
-          toast({
-            title: "Sync Completed!",
-            description: `${data.filesCreated} files created, ${data.filesUpdated} files updated.`,
-          });
-          
-          // Refresh repositories to show updates
-          fetchRepos(githubUsername);
-        } else {
-          throw new Error(data.error || 'Failed to sync repository');
-        }
-      } else {
-        // This is an original repo, find its clones and sync them
-        const { data: clones, error: cloneError } = await supabase
-          .from('repository_clones')
-          .select('id, cloned_repo_full_name')
-          .eq('original_repo_full_name', repo.full_name)
-          .eq('sync_enabled', true);
-
-        if (cloneError || !clones || clones.length === 0) {
-          throw new Error('No clones found for this repository');
-        }
-
-        let totalCreated = 0;
-        let totalUpdated = 0;
-
-        for (const clone of clones) {
-          try {
-            const { data, error } = await supabase.functions.invoke('sync-repository', {
-              body: {
-                cloneId: clone.id,
-                triggerSource: 'manual'
-              }
-            });
-
-            if (data?.success) {
-              totalCreated += data.filesCreated || 0;
-              totalUpdated += data.filesUpdated || 0;
-            }
-          } catch (error) {
-            console.error(`Failed to sync clone ${clone.cloned_repo_full_name}:`, error);
-          }
-        }
-
-        toast({
-          title: "Sync Completed!",
-          description: `${clones.length} clone(s) synced: ${totalCreated} files created, ${totalUpdated} files updated.`,
-        });
-        
-        // Refresh repositories to show updates
-        fetchRepos(githubUsername);
-      }
-    } catch (error) {
-      console.error('Error syncing repository:', error);
+      
       toast({
-        title: "Sync Failed",
-        description: error.message || "Failed to sync repository. Please try again.",
+        title: "Update Check Started",
+        description: "Checking for updates. Syncs will start automatically if updates are found.",
+      });
+    } catch (error) {
+      console.error('Error checking for updates:', error);
+      toast({
+        title: "Update Check Failed",
+        description: error.message || "Failed to check for updates. Please try again.",
         variant: "destructive",
       });
     } finally {
@@ -379,7 +305,7 @@ const GitHubStats = ({ user, onLogout }: GitHubStatsProps) => {
                       onClick={(e) => handleSyncRepo(repo, e)}
                       disabled={syncingRepos.has(repo.id)}
                       className="h-8 w-8 p-0"
-                      title="Sync with original"
+                      title="Check for updates"
                     >
                       {syncingRepos.has(repo.id) ? (
                         <Loader2 className="h-3 w-3 animate-spin" />
