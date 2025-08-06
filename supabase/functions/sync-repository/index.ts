@@ -61,7 +61,7 @@ serve(async (req) => {
     }
 
 
-    console.log(`Syncing from ${clone.original_repo_full_name} to ${clone.cloned_repo_full_name}`);
+    console.log(`Checking for updates from ${clone.original_repo_full_name} to ${clone.cloned_repo_full_name}`);
 
     // Get the latest commit from original repository
     const originalCommitsResponse = await fetch(`https://api.github.com/repos/${clone.original_repo_full_name}/commits?per_page=1`, {
@@ -84,7 +84,41 @@ serve(async (req) => {
       );
     }
 
-    const latestCommit = originalCommits[0];
+    const latestOriginalCommit = originalCommits[0];
+
+    // Get the latest commit from cloned repository to compare
+    const clonedCommitsResponse = await fetch(`https://api.github.com/repos/${clone.cloned_repo_full_name}/commits?per_page=1`, {
+      headers: {
+        'Authorization': `token ${accessToken}`,
+        'Accept': 'application/vnd.github.v3+json',
+      }
+    });
+
+    let latestClonedCommitSha = null;
+    if (clonedCommitsResponse.ok) {
+      const clonedCommits = await clonedCommitsResponse.json();
+      if (clonedCommits.length > 0) {
+        latestClonedCommitSha = clonedCommits[0].sha;
+      }
+    }
+
+    // Check if sync is needed
+    const needsSync = !latestClonedCommitSha || latestOriginalCommit.sha !== latestClonedCommitSha;
+    
+    if (!needsSync) {
+      console.log('No updates needed - repositories are in sync');
+      return new Response(
+        JSON.stringify({ 
+          message: 'No updates needed - repositories are in sync',
+          latestCommitSha: latestOriginalCommit.sha,
+          triggerSource 
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    console.log(`Updates found - syncing from ${clone.original_repo_full_name} to ${clone.cloned_repo_full_name}`);
+    const latestCommit = latestOriginalCommit;
 
     // Get the tree from the latest commit
     const treeResponse = await fetch(`https://api.github.com/repos/${clone.original_repo_full_name}/git/trees/${latestCommit.sha}?recursive=1`, {
@@ -100,18 +134,7 @@ serve(async (req) => {
 
     const tree = await treeResponse.json();
 
-    // Get current files in cloned repository
-    const clonedContentsResponse = await fetch(`https://api.github.com/repos/${clone.cloned_repo_full_name}/contents`, {
-      headers: {
-        'Authorization': `token ${accessToken}`,
-        'Accept': 'application/vnd.github.v3+json',
-      }
-    });
-
-    let existingFiles: any[] = [];
-    if (clonedContentsResponse.ok) {
-      existingFiles = await clonedContentsResponse.json();
-    }
+    // We'll get individual file SHAs as needed instead of trying to get all files upfront
 
     let filesUpdated = 0;
     let filesCreated = 0;
@@ -135,16 +158,27 @@ serve(async (req) => {
 
           const fileData = await fileResponse.json();
           
-          // Check if file exists in cloned repository
-          const existingFile = existingFiles.find(f => f.name === item.path);
+          // Check if file exists in cloned repository by trying to get its current SHA
+          let existingFileSha = null;
+          const existingFileResponse = await fetch(`https://api.github.com/repos/${clone.cloned_repo_full_name}/contents/${item.path}`, {
+            headers: {
+              'Authorization': `token ${accessToken}`,
+              'Accept': 'application/vnd.github.v3+json',
+            }
+          });
+          
+          if (existingFileResponse.ok) {
+            const existingFileData = await existingFileResponse.json();
+            existingFileSha = existingFileData.sha;
+          }
           
           const updateData: any = {
             message: `Sync: Update ${item.path} from ${clone.original_repo_full_name}`,
             content: fileData.content,
           };
 
-          if (existingFile) {
-            updateData.sha = existingFile.sha;
+          if (existingFileSha) {
+            updateData.sha = existingFileSha;
           }
 
           // Create or update file in cloned repository
@@ -159,7 +193,7 @@ serve(async (req) => {
           });
 
           if (updateResponse.ok) {
-            if (existingFile) {
+            if (existingFileSha) {
               filesUpdated++;
               console.log(`Updated: ${item.path}`);
             } else {
