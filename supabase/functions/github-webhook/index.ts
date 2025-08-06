@@ -61,26 +61,24 @@ serve(async (req) => {
 
       console.log(`Found ${clones?.length || 0} clones to sync`);
 
-      // Trigger sync for each clone
+      // Trigger sync for each clone (don't await - let them run in background)
       if (clones && clones.length > 0) {
         for (const clone of clones) {
-          try {
-            // Invoke the sync function for each clone
-            const { error: syncError } = await supabase.functions.invoke('sync-repository', {
-              body: {
-                cloneId: clone.id,
-                triggerSource: 'webhook'
-              }
-            });
-
-            if (syncError) {
-              console.error(`Failed to sync clone ${clone.id}:`, syncError);
+          // Start sync in background without waiting
+          supabase.functions.invoke('sync-repository', {
+            body: {
+              cloneId: clone.id,
+              triggerSource: 'webhook'
+            }
+          }).then(({ error }) => {
+            if (error) {
+              console.error(`Failed to sync clone ${clone.id}:`, error);
             } else {
               console.log(`Successfully triggered sync for clone: ${clone.cloned_repo_full_name}`);
             }
-          } catch (error) {
+          }).catch(error => {
             console.error(`Error triggering sync for clone ${clone.id}:`, error);
-          }
+          });
         }
       }
     }
